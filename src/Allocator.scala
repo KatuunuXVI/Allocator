@@ -84,16 +84,17 @@ object Allocator {
         }
         println("\nReallocate: ")*/
 
-        /*for(op <- postAll) {    //Print Alloc
+        for(op <- postAll) {    //Print Alloc
           println(op)
-        }*/
+        }
+        //println(postAll.filterNot(p => p.isInstanceOf[MemOp]).length + postAll.filter(p => p.isInstanceOf[MemOp]).length )
 
-        val renameVal = executor.runProg(IR2,true,"cc6o.txt")     //Operation Dissect
-        println(renameVal._1)
-        println("\nReallocate: ")
-        val reAllVal = executor.runProg(postAll,true,"cc6a.txt")
-        println(reAllVal._1)
-        println("176: " + reAllVal._1.get(176))
+        //val renameVal = executor.runProg(IR2,true,"Renaming/src/cc5o.txt")     //Operation Dissect
+        //println(renameVal._1)
+        //println("\nReallocate: ")
+        //val reAllVal = executor.runProg(postAll,true,"Renaming/src/cc5a.txt")
+        //println(reAllVal._1)
+        //println("176: " + reAllVal._1.get(176))
 
 
         //println("1024: " + reAllVal._1.get(1024))
@@ -505,11 +506,12 @@ object Allocator {
     val freePRs: mutable.Map[Int, Register] = mutable.Map()
     val PRToVR: mutable.Map[Register,Register] = mutable.Map()
     val VRToPR: mutable.Map[Register,Register] = mutable.Map()
+    val inUse: mutable.Set[Register] = mutable.Set()
     val PRNU: mutable.Map[Register, Option[Int]] = mutable.Map()
     val VRNU: mutable.Map[Register, Option[Int]] = mutable.Map()
     var spillRegister: Register = _
     val VRToSpill: mutable.Map[Register, Int] = mutable.Map()
-
+    val VRDefinition: mutable.Map[Register, Operation] = mutable.Map()
     var spillOp1: Option[Operation] = Option.empty
     var spillOp2: Option[Operation] = Option.empty
     var restoreOp1: Option[Operation] = Option.empty
@@ -554,6 +556,11 @@ object Allocator {
       //println("PR: " + newPR)
       VRToPR.update(register,newPR)
       PRToVR.update(newPR,register)
+
+      if(VRDefinition.contains(register)) {
+        opList = opList.::(new LoadI(VRDefinition(register).asInstanceOf[LoadI].x,newPR))
+        return newPR
+      }
       restoreOp2 = Option(new Load(spillRegister,newPR))
       //opList = opList.::()
       val resOp2 = new Load(spillRegister,newPR)
@@ -564,6 +571,7 @@ object Allocator {
     } ensuring(VRNU.forall(x => VRToPR.contains(x._1)))
 
     def freePR(register: Register): Unit = {
+
       require(VRNU.forall(x => VRToPR.contains(x._1)))
         require(VRNU(PRToVR(register)).isEmpty)
         VRToPR.remove(PRToVR(register))
@@ -571,28 +579,48 @@ object Allocator {
         PRToVR.remove(register)
         freePRs.update(register.label,register)
     } ensuring(VRNU.forall(x => VRToPR.contains(x._1)))
-
+    var spillLoc: Int = 32764
     def spillPR(): Register = {
+
       require(VRNU.forall(x => VRToPR.contains(x._1)))
-      var spillLoc: Int = 32768
-      while(VRToSpill.values.toSet.contains(spillLoc)) {
-        spillLoc += 4
-      }
+      //println("Spilling: ")
+      //println("VRtoPR: " + VRToPR)
+      //println("In Use: " + inUse)
+      //while(VRToSpill.values.toSet.contains(spillLoc)) {
+
+      //}
       //println(VRNU)
       //println(VRToPR)
-      val vrSpill: Register = if(VRNU.exists(p => p._2.isEmpty)) VRNU.filter(p => p._2.isEmpty).toList.head._1 else VRNU.maxBy(a => a._2)._1
-
+      /*if(VRToPR.values.toSet.contains(spillRegister) && !inUse.contains(PRToVR(spillRegister))) {
+        spillLoc += 4
+        opList = opList.::(new LoadI(Constant(spillLoc),spillRegister))
+        opList = opList.::(new Store(prSpill,spillRegister))
+      }*/
+      val vrSpill: Register = if(VRNU.filterNot(p => inUse.contains(p._1)).exists(p => p._2.isEmpty)) {
+        VRNU.filter(p => p._2.isEmpty && !inUse.contains(p._1)).toList.head._1
+      } else if(VRNU.filterNot(p => inUse.contains(p._1)).exists(p => VRDefinition.contains(p._1))) {
+        VRNU.filter(p => VRDefinition.contains(p._1) && !inUse.contains(p._1)).maxBy(a => a._2)._1
+      } else {
+        if(VRNU.filterNot(p => inUse.contains(p._1)).isEmpty) {
+          return spillRegister
+        } else {
+          VRNU.filterNot(p => inUse.contains(p._1)).maxBy(a => a._2.get)._1
+        }
+      }
       val prSpill: Register = VRToPR(vrSpill)
 
-      //println("Spilling " + vrSpill)
+
+      if(VRNU(vrSpill).isDefined) {
+        spillLoc += 4
+        VRToSpill.update(vrSpill,spillLoc)
+        opList = opList.::(new LoadI(Constant(spillLoc),spillRegister))
+        opList = opList.::(new Store(prSpill,spillRegister))
+      }
+
+      //println("Removing " + vrSpill)
       VRToPR.remove(vrSpill)
       VRNU.remove(vrSpill)
-      VRToSpill.update(vrSpill,spillLoc)
-      spillOp1 = Option(new LoadI(Constant(spillLoc),spillRegister))
-      spillOp2 = Option(new Store(prSpill,spillRegister))
-
-      opList = opList.::(new LoadI(Constant(spillLoc),spillRegister))
-      opList = opList.::(new Store(prSpill,spillRegister))
+      //println(VRNU)
       prSpill
     } ensuring(VRNU.forall(x => VRToPR.contains(x._1)))
 
@@ -603,6 +631,8 @@ object Allocator {
       restoreOp2 = Option.empty
       mainOp = Option.empty
       opList = List.empty
+      inUse.clear()
+      //println(VRNU.forall(x => VRToPR.contains(x._1) || VRToSpill.contains(x._1)))
       require(VRNU.forall(x => VRToPR.contains(x._1) || VRToSpill.contains(x._1)))
       op match {
         case load: Load =>
@@ -657,21 +687,26 @@ object Allocator {
           mainOp = Option(new Store(pr1,pr2))
         case loadI: LoadI=>
           var pr: Register = null
-          if(VRToPR.get(loadI.r).isEmpty) {
+          //if(VRToPR.get(loadI.r).isEmpty) {
             pr = getPR()
             VRToPR.update(loadI.r,pr)
             PRToVR.update(pr,loadI.r)
             PRNU.update(pr, loadI.rNU)
             VRNU.update(loadI.r, loadI.rNU)
+            VRDefinition.update(loadI.r,loadI)
             //println(VRToPR)
             //println(PRToVR)
             //println(PRToVR.get(Register(2)))
-          }
+          //}
           mainOp = Option(new LoadI(loadI.x,pr))
         case arith: ArithOp =>
           //println(VRToSpill)
-
+          //println("Arith Registers: " + arith)
+          //println(VRToPR)
+          inUse.add(arith.r1)
+          inUse.add(arith.r2)
           val pr1: Register = if (VRToPR.get(arith.r1).isEmpty) restorePR(arith.r1) else VRToPR(arith.r1)
+
           //println("PR1: " + pr1)
           val pr2: Register = if (VRToPR.get(arith.r2).isEmpty) restorePR(arith.r2) else VRToPR(arith.r2)
 
@@ -735,20 +770,20 @@ object Allocator {
         if(print) {
           program(op) match {
             case loadI: LoadI if loadI.x.value >= 32768 && op+1 < program.length && program(op+1).isInstanceOf[Store] =>
-              pw.write("SPILL: " + program(op) + "\nSPILL: Storage: " + storage.toList.sortBy(s => s._2) + "\nSPILL: Registers: " + registers.filterNot(r => registers(r._1) >= 32768).toList.sortBy(r => r._2))
+              pw.write("\nSPILL: " + program(op) + "\nSPILL: Storage: " + storage.toList.sortBy(s => s._2) + "\nSPILL: Registers: " + registers.filterNot(r => registers(r._1) >= 32768).toList.sortBy(r => r._2))
               spill = true
             case loadI: LoadI if loadI.x.value >= 32768 && op+1 < program.length && program(op+1).isInstanceOf[Load] =>
-              pw.write("RESTORE: " + program(op) + "\nRESTORE: Storage: " + storage.toList.sortBy(s => s._2) + "\nRESTORE: Registers: " + registers.filterNot(r => registers(r._1) >= 32768).toList.sortBy(r => r._2))
+              pw.write("\nRESTORE: " + program(op) + "\nRESTORE: Storage: " + storage.toList.sortBy(s => s._2) + "\nRESTORE: Registers: " + registers.filterNot(r => registers(r._1) >= 32768).toList.sortBy(r => r._2))
               restore = true
             case _ =>
               if(spill) {
-                pw.write("SPILL: " + program(op) + "\nSPILL: Storage: " + storage + "\nSPILL: Registers: " + registers.filterNot(r => registers(r._1) >= 32768).toList.sortBy(r => r._1.label))
+                pw.write("\nSPILL: " + program(op) + "\nSPILL: Storage: " + storage + "\nSPILL: Registers: " + registers.filterNot(r => registers(r._1) >= 32768).toList.sortBy(r => r._1.label))
                 spill = false
               } else if(restore) {
-                pw.write("RESTORE: " + program(op) + "\nRESTORE: Storage: " + storage.toList.sortBy(s => s._2) + "\nRESTORE: Registers: " + registers.filterNot(r => registers(r._1) >= 32768).toList.sortBy(r => r._2))
+                pw.write("\nRESTORE: " + program(op) + "\nRESTORE: Storage: " + storage.toList.sortBy(s => s._2) + "\nRESTORE: Registers: " + registers.filterNot(r => registers(r._1) >= 32768).toList.sortBy(r => r._2))
                 restore = false
               } else {
-                pw.write("OP " + opCount + ": " + program(op) + "\nOP " + opCount + ": Storage: " + storage.toList.sortBy(s => s._2) + "\nOP " + opCount + ": Registers: " + registers.filterNot(r => registers(r._1) >= 32768).toList.sortBy(r => r._2))
+                pw.write("\nOP " + opCount + ": " + program(op) + "\nOP " + opCount + ": Storage: " + storage.toList.sortBy(s => s._2) + "\nOP " + opCount + ": Registers: " + registers.filterNot(r => registers(r._1) >= 32768).toList.sortBy(r => r._2))
                 opCount += 1
               }
           }
